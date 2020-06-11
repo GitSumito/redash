@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { isEmpty, includes, compact, map, has, pick, keys, extend, every, get } from "lodash";
 import notification from "@/services/notification";
 import location from "@/services/location";
@@ -56,7 +56,7 @@ function useDashboard(dashboardData) {
       aclUrl,
       context: "dashboard",
       author: dashboard.user,
-    }).result.catch(() => {}); // ignore dismiss
+    });
   }, [dashboard]);
 
   const updateDashboard = useCallback(
@@ -100,28 +100,31 @@ function useDashboard(dashboardData) {
 
   const refreshWidget = useCallback(widget => loadWidget(widget, true), [loadWidget]);
 
-  const removeWidget = useCallback(
-    widgetId => {
-      dashboard.widgets = dashboard.widgets.filter(widget => widget.id !== undefined && widget.id !== widgetId);
-      setDashboard(currentDashboard => extend({}, currentDashboard));
-    },
-    [dashboard]
-  );
+  const removeWidget = useCallback(widgetId => {
+    setDashboard(currentDashboard =>
+      extend({}, currentDashboard, {
+        widgets: currentDashboard.widgets.filter(widget => widget.id !== undefined && widget.id !== widgetId),
+      })
+    );
+  }, []);
+
+  const dashboardRef = useRef();
+  dashboardRef.current = dashboard;
 
   const loadDashboard = useCallback(
     (forceRefresh = false, updatedParameters = []) => {
-      const affectedWidgets = getAffectedWidgets(dashboard.widgets, updatedParameters);
+      const affectedWidgets = getAffectedWidgets(dashboardRef.current.widgets, updatedParameters);
       const loadWidgetPromises = compact(
         affectedWidgets.map(widget => loadWidget(widget, forceRefresh).catch(error => error))
       );
 
       return Promise.all(loadWidgetPromises).then(() => {
-        const queryResults = compact(map(dashboard.widgets, widget => widget.getQueryResult()));
-        const updatedFilters = collectDashboardFilters(dashboard, queryResults, location.search);
+        const queryResults = compact(map(dashboardRef.current.widgets, widget => widget.getQueryResult()));
+        const updatedFilters = collectDashboardFilters(dashboardRef.current, queryResults, location.search);
         setFilters(updatedFilters);
       });
     },
-    [dashboard, loadWidget]
+    [loadWidget]
   );
 
   const refreshDashboard = useCallback(
@@ -142,40 +145,42 @@ function useDashboard(dashboardData) {
   }, [dashboard]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const showShareDashboardDialog = useCallback(() => {
+    const handleDialogClose = () => setDashboard(currentDashboard => extend({}, currentDashboard));
+
     ShareDashboardDialog.showModal({
       dashboard,
       hasOnlySafeQueries,
     })
-      .result.catch(() => {}) // ignore dismiss
-      .finally(() => setDashboard(currentDashboard => extend({}, currentDashboard)));
+      .onClose(handleDialogClose)
+      .onDismiss(handleDialogClose);
   }, [dashboard, hasOnlySafeQueries]);
 
   const showAddTextboxDialog = useCallback(() => {
     TextboxDialog.showModal({
-      dashboard,
-      onConfirm: text =>
-        dashboard.addWidget(text).then(() => setDashboard(currentDashboard => extend({}, currentDashboard))),
-    }).result.catch(() => {}); // ignore dismiss
+      isNew: true,
+    }).onClose(text =>
+      dashboard.addWidget(text).then(() => setDashboard(currentDashboard => extend({}, currentDashboard)))
+    );
   }, [dashboard]);
 
   const showAddWidgetDialog = useCallback(() => {
     AddWidgetDialog.showModal({
       dashboard,
-      onConfirm: (visualization, parameterMappings) =>
-        dashboard
-          .addWidget(visualization, {
-            parameterMappings: editableMappingsToParameterMappings(parameterMappings),
-          })
-          .then(widget => {
-            const widgetsToSave = [
-              widget,
-              ...synchronizeWidgetTitles(widget.options.parameterMappings, dashboard.widgets),
-            ];
-            return Promise.all(widgetsToSave.map(w => w.save())).then(() =>
-              setDashboard(currentDashboard => extend({}, currentDashboard))
-            );
-          }),
-    }).result.catch(() => {}); // ignore dismiss
+    }).onClose(({ visualization, parameterMappings }) =>
+      dashboard
+        .addWidget(visualization, {
+          parameterMappings: editableMappingsToParameterMappings(parameterMappings),
+        })
+        .then(widget => {
+          const widgetsToSave = [
+            widget,
+            ...synchronizeWidgetTitles(widget.options.parameterMappings, dashboard.widgets),
+          ];
+          return Promise.all(widgetsToSave.map(w => w.save())).then(() =>
+            setDashboard(currentDashboard => extend({}, currentDashboard))
+          );
+        })
+    );
   }, [dashboard]);
 
   const [refreshRate, setRefreshRate, disableRefreshRate] = useRefreshRateHandler(refreshDashboard);
